@@ -1,0 +1,1 @@
+Expecting a folder named 1-200 with nii.gz files

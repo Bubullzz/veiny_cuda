@@ -1,0 +1,6 @@
+# CMake build directories
+/build/
+/cmake-build-debug/
+/out/
+.idea/
+1-200/
