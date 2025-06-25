@@ -9,99 +9,126 @@
 #include <vtkImageViewer2.h>
 #include <vtkRenderWindowInteractor.h>
 
+class SliceScrollInteractorStyle : public vtkCommand
+{
+public:
+    static SliceScrollInteractorStyle* New()
+    {
+        return new SliceScrollInteractorStyle;
+    }
+
+    void SetViewer(vtkImageViewer2* viewer) { this->Viewer = viewer; }
+    void SetMinSlice(int minSlice) { this->MinSlice = minSlice; }
+    void SetMaxSlice(int maxSlice) { this->MaxSlice = maxSlice; }
+
+    void Execute(vtkObject* caller, unsigned long eventId, void* callData) override
+    {
+        if (eventId != vtkCommand::KeyPressEvent)
+            return;
+
+        vtkRenderWindowInteractor* interactor = static_cast<vtkRenderWindowInteractor*>(caller);
+        std::string key = interactor->GetKeySym();
+
+        if (key == "Up" || key == "Right")
+        {
+            int slice = Viewer->GetSlice();
+            if (slice < MaxSlice)
+            {
+                Viewer->SetSlice(slice + 1);
+                Viewer->Render();
+                std::cout << "Slice: " << slice + 1 << std::endl;
+            }
+        }
+        else if (key == "Down" || key == "Left")
+        {
+            int slice = Viewer->GetSlice();
+            if (slice > MinSlice)
+            {
+                Viewer->SetSlice(slice - 1);
+                Viewer->Render();
+                std::cout << "Slice: " << slice - 1 << std::endl;
+            }
+        }
+    }
+
+private:
+    vtkImageViewer2* Viewer = nullptr;
+    int MinSlice = 0;
+    int MaxSlice = 0;
+};
+
+
 int main(int argc, char *argv[])
 {
     const char * filename;
     if (argc < 2)
     {
-        filename = "/home/bulle/epita/s8/veiny_cuda /1-200/91.img.nii.gz"; // CHANGE DIRECTORY HERE
+        filename = "/home/bulle/epita/s8/veiny_cuda/1-200/91.img.nii.gz"; // CHANGE DIRECTORY HERE
     }
     else
         filename = argv[1];
 
-    // ITK types
-    constexpr unsigned int Dimension3D = 3;
+    constexpr unsigned int Dimension = 3;
     using PixelType = float;
-    using ImageType3D = itk::Image<PixelType, Dimension3D>;
+    using ImageType = itk::Image<PixelType, Dimension>;
 
-    // Reader
-    auto reader = itk::ImageFileReader<ImageType3D>::New();
+    auto reader = itk::ImageFileReader<ImageType>::New();
     reader->SetFileName(filename);
 
     try
     {
         reader->Update();
     }
-    catch (itk::ExceptionObject & err)
+    catch (itk::ExceptionObject& err)
     {
         std::cerr << "Error reading image: " << err << std::endl;
         return EXIT_FAILURE;
     }
 
-    ImageType3D::Pointer image3D = reader->GetOutput();
-    ImageType3D::RegionType region = image3D->GetLargestPossibleRegion();
+    ImageType::Pointer image = reader->GetOutput();
+    ImageType::RegionType region = image->GetLargestPossibleRegion();
     auto size = region.GetSize();
 
     std::cout << "Image size: " << size[0] << " x " << size[1] << " x " << size[2] << std::endl;
 
-    // Extract a 2D slice at the middle of z-axis
-    constexpr unsigned int Dimension2D = 2;
-    using ImageType2D = itk::Image<PixelType, Dimension2D>;
-
-    using ExtractFilterType = itk::ExtractImageFilter<ImageType3D, ImageType2D>;
-    auto extractFilter = ExtractFilterType::New();
-
-    // Define extraction region (one slice)
-    ImageType3D::IndexType start = region.GetIndex();
-    ImageType3D::SizeType size2D = size;
-    size2D[2] = 0; // extract a single slice in z-dim
-    start[2] = size[2] / 2; // middle slice
-
-    ImageType3D::RegionType extractRegion;
-    extractRegion.SetIndex(start);
-    extractRegion.SetSize(size2D);
-
-    extractFilter->SetExtractionRegion(extractRegion);
-    extractFilter->SetInput(image3D);
-    extractFilter->SetDirectionCollapseToSubmatrix();
-
-    try
-    {
-        extractFilter->Update();
-    }
-    catch (itk::ExceptionObject & err)
-    {
-        std::cerr << "Error extracting slice: " << err << std::endl;
-        return EXIT_FAILURE;
-    }
-
-    // Convert to VTK image
-    using ConnectorType = itk::ImageToVTKImageFilter<ImageType2D>;
+    // We will display the whole 3D image with vtkImageViewer2 and scroll slices
+    // Convert ITK image to VTK image
+    using ConnectorType = itk::ImageToVTKImageFilter<ImageType>;
     auto connector = ConnectorType::New();
-    connector->SetInput(extractFilter->GetOutput());
-
+    connector->SetInput(image);
     try
     {
         connector->Update();
     }
-    catch (itk::ExceptionObject & err)
+    catch (itk::ExceptionObject& err)
     {
-        std::cerr << "Error converting to VTK image: " << err << std::endl;
+        std::cerr << "Error converting ITK to VTK: " << err << std::endl;
         return EXIT_FAILURE;
     }
 
-    // Visualize with VTK
     auto viewer = vtkSmartPointer<vtkImageViewer2>::New();
     viewer->SetInputData(connector->GetOutput());
+
+    // Setup initial slice and slice range
+    viewer->SetSlice(0);
+    viewer->SetSliceOrientationToXY(); // axial slices
     viewer->SetColorLevel(128);
     viewer->SetColorWindow(256);
-
-    auto renderWindowInteractor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
-    viewer->SetupInteractor(renderWindowInteractor);
     viewer->Render();
-    //viewer->GetRenderer()->ResetCamera();
-    //viewer->SetWindowName("Middle Slice");
-    renderWindowInteractor->Start();
+
+    // Setup interactor with custom keypress event
+    auto interactor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
+    viewer->SetupInteractor(interactor);
+
+    auto style = vtkSmartPointer<SliceScrollInteractorStyle>::New();
+    style->SetViewer(viewer);
+    style->SetMinSlice(0);
+    style->SetMaxSlice(size[2] - 1);
+
+    interactor->AddObserver(vtkCommand::KeyPressEvent, style);
+
+    interactor->Initialize();
+    interactor->Start();
 
     return EXIT_SUCCESS;
 }
