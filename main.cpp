@@ -1,13 +1,57 @@
 #include <iostream>
+#include <fstream>
+#include <sstream>
+#include <vector>
+#include <string>
+#include <cmath>
 
 #include "itkImage.h"
 #include "itkImageFileReader.h"
-#include "itkExtractImageFilter.h"
 #include "itkImageToVTKImageFilter.h"
 
 #include <vtkSmartPointer.h>
 #include <vtkImageViewer2.h>
 #include <vtkRenderWindowInteractor.h>
+#include <vtkCommand.h>
+#include <vtkSphereSource.h>
+#include <vtkSphereSource.h>
+#include <vtkPolyDataMapper.h>
+#include <vtkActor.h>
+#include <vtkRenderer.h>
+#include <vtkProperty.h>
+#include <vtkRenderWindow.h>
+
+struct FiducialPoint {
+    double x, y, z;
+};
+
+std::vector<FiducialPoint> ReadFiducialsFromFCSV(const std::string& filepath) {
+    std::ifstream file(filepath);
+    std::string line;
+    std::vector<FiducialPoint> points;
+
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+
+        std::stringstream ss(line);
+        std::string item;
+        std::vector<std::string> tokens;
+
+        while (std::getline(ss, item, ',')) {
+            tokens.push_back(item);
+        }
+
+        if (tokens.size() >= 4) {
+            FiducialPoint p;
+            p.x = std::stod(tokens[1]);
+            p.y = std::stod(tokens[2]);
+            p.z = std::stod(tokens[3]);
+            points.push_back(p);
+        }
+    }
+
+    return points;
+}
 
 class SliceScrollInteractorStyle : public vtkCommand
 {
@@ -20,6 +64,14 @@ public:
     void SetViewer(vtkImageViewer2* viewer) { this->Viewer = viewer; }
     void SetMinSlice(int minSlice) { this->MinSlice = minSlice; }
     void SetMaxSlice(int maxSlice) { this->MaxSlice = maxSlice; }
+    void SetSpacing(double zSpacing) { this->ZSpacing = zSpacing; }
+    void SetOrigin(double zOrigin) { this->ZOrigin = zOrigin; }
+
+    void SetFiducialPoints(const std::vector<FiducialPoint>& points, vtkRenderer* renderer)
+    {
+        this->Fiducials = points;
+        this->Renderer = renderer;
+    }
 
     void Execute(vtkObject* caller, unsigned long eventId, void* callData) override
     {
@@ -29,94 +81,127 @@ public:
         vtkRenderWindowInteractor* interactor = static_cast<vtkRenderWindowInteractor*>(caller);
         std::string key = interactor->GetKeySym();
 
+        int slice = Viewer->GetSlice();
+        bool updated = false;
+
         if (key == "Up" || key == "Right")
         {
-            int slice = Viewer->GetSlice();
-            if (slice < MaxSlice)
-            {
+            if (slice < MaxSlice) {
                 Viewer->SetSlice(slice + 1);
-                Viewer->Render();
-                std::cout << "Slice: " << slice + 1 << std::endl;
+                updated = true;
             }
         }
         else if (key == "Down" || key == "Left")
         {
-            int slice = Viewer->GetSlice();
-            if (slice > MinSlice)
-            {
+            if (slice > MinSlice) {
                 Viewer->SetSlice(slice - 1);
-                Viewer->Render();
-                std::cout << "Slice: " << slice - 1 << std::endl;
+                updated = true;
             }
+        }
+
+        if (updated) {
+            std::cout << "Slice: " << Viewer->GetSlice() << std::endl;
+            UpdateFiducialActors();
+            Viewer->Render();
         }
     }
 
+    void InitializeFiducialActors()
+    {
+        for (const auto& point : Fiducials) {
+            auto sphereSource = vtkSmartPointer<vtkSphereSource>::New();
+            sphereSource->SetCenter(point.x, point.y, point.z);
+            sphereSource->SetRadius(1.0);
+
+            auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
+            mapper->SetInputConnection(sphereSource->GetOutputPort());
+
+            auto actor = vtkSmartPointer<vtkActor>::New();
+            actor->SetMapper(mapper);
+            actor->GetProperty()->SetColor(1.0, 0.0, 0.0); // red
+            actor->SetVisibility(false); // initially hidden
+
+            Renderer->AddActor(actor);
+            FiducialActors.push_back(actor);
+        }
+
+        UpdateFiducialActors();
+    }
+
 private:
+    void UpdateFiducialActors()
+    {
+        int currentSlice = Viewer->GetSlice();
+        double sliceZ = currentSlice * ZSpacing + ZOrigin;
+        double tolerance = ZSpacing / 2.0;
+
+        for (size_t i = 0; i < Fiducials.size(); ++i) {
+            double dz = std::abs(Fiducials[i].z - sliceZ);
+            FiducialActors[i]->SetVisibility(dz < tolerance);
+        }
+    }
+
     vtkImageViewer2* Viewer = nullptr;
     int MinSlice = 0;
     int MaxSlice = 0;
+    double ZSpacing = 1.0;
+    double ZOrigin = 0.0;
+
+    std::vector<FiducialPoint> Fiducials;
+    std::vector<vtkSmartPointer<vtkActor>> FiducialActors;
+    vtkRenderer* Renderer = nullptr;
 };
 
-
-int main(int argc, char *argv[])
+int main(int argc, char* argv[])
 {
-    const char * filename;
-    if (argc < 2)
-    {
-        filename = "/home/bulle/epita/s8/veiny_cuda/1-200/91.img.nii.gz"; // CHANGE DIRECTORY HERE
-    }
-    else
-        filename = argv[1];
+    const char* imagePath = (argc > 1) ? argv[1] : "/home/bulle/epita/s8/veiny_cuda/1-200/91.img.nii.gz";
+    std::string fcsvPath = "/home/bulle/epita/s8/veiny_cuda/CenterlineCurve.fcsv"; // CHANGE PATH
 
+    // ITK image type
     constexpr unsigned int Dimension = 3;
     using PixelType = float;
     using ImageType = itk::Image<PixelType, Dimension>;
 
+    // Read image
     auto reader = itk::ImageFileReader<ImageType>::New();
-    reader->SetFileName(filename);
+    reader->SetFileName(imagePath);
 
-    try
-    {
+    try {
         reader->Update();
-    }
-    catch (itk::ExceptionObject& err)
-    {
+    } catch (itk::ExceptionObject& err) {
         std::cerr << "Error reading image: " << err << std::endl;
         return EXIT_FAILURE;
     }
 
     ImageType::Pointer image = reader->GetOutput();
-    ImageType::RegionType region = image->GetLargestPossibleRegion();
+    auto region = image->GetLargestPossibleRegion();
     auto size = region.GetSize();
+    auto spacing = image->GetSpacing();
+    auto origin = image->GetOrigin();
 
     std::cout << "Image size: " << size[0] << " x " << size[1] << " x " << size[2] << std::endl;
 
-    // We will display the whole 3D image with vtkImageViewer2 and scroll slices
-    // Convert ITK image to VTK image
+    // Convert ITK -> VTK
     using ConnectorType = itk::ImageToVTKImageFilter<ImageType>;
     auto connector = ConnectorType::New();
     connector->SetInput(image);
-    try
-    {
-        connector->Update();
-    }
-    catch (itk::ExceptionObject& err)
-    {
-        std::cerr << "Error converting ITK to VTK: " << err << std::endl;
-        return EXIT_FAILURE;
-    }
+    connector->Update();
 
+    // VTK viewer
     auto viewer = vtkSmartPointer<vtkImageViewer2>::New();
     viewer->SetInputData(connector->GetOutput());
-
-    // Setup initial slice and slice range
-    viewer->SetSlice(0);
-    viewer->SetSliceOrientationToXY(); // axial slices
+    viewer->SetSliceOrientationToXY();
     viewer->SetColorLevel(128);
     viewer->SetColorWindow(256);
-    viewer->Render();
+    viewer->SetSlice(0);
 
-    // Setup interactor with custom keypress event
+    auto renderer = viewer->GetRenderer(); // use viewer's internal renderer
+    viewer->GetRenderWindow()->Render();
+
+    // Read fiducials
+    auto fiducials = ReadFiducialsFromFCSV(fcsvPath);
+
+    // Interactor
     auto interactor = vtkSmartPointer<vtkRenderWindowInteractor>::New();
     viewer->SetupInteractor(interactor);
 
@@ -124,6 +209,10 @@ int main(int argc, char *argv[])
     style->SetViewer(viewer);
     style->SetMinSlice(0);
     style->SetMaxSlice(size[2] - 1);
+    style->SetSpacing(spacing[2]);
+    style->SetOrigin(origin[2]);
+    style->SetFiducialPoints(fiducials, renderer);
+    style->InitializeFiducialActors();
 
     interactor->AddObserver(vtkCommand::KeyPressEvent, style);
 
