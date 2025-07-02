@@ -14,7 +14,6 @@
 #include <vtkRenderWindowInteractor.h>
 #include <vtkCommand.h>
 #include <vtkSphereSource.h>
-#include <vtkSphereSource.h>
 #include <vtkPolyDataMapper.h>
 #include <vtkActor.h>
 #include <vtkRenderer.h>
@@ -67,6 +66,14 @@ public:
     void SetSpacing(double zSpacing) { this->ZSpacing = zSpacing; }
     void SetOrigin(double zOrigin) { this->ZOrigin = zOrigin; }
 
+    void SetImageSpacing(const double spacing[3]) {
+        for (int i = 0; i < 3; ++i) ImageSpacing[i] = spacing[i];
+    }
+
+    void SetImageOrigin(const double origin[3]) {
+        for (int i = 0; i < 3; ++i) ImageOrigin[i] = origin[i];
+    }
+
     void SetFiducialPoints(const std::vector<FiducialPoint>& points, vtkRenderer* renderer)
     {
         this->Fiducials = points;
@@ -109,8 +116,13 @@ public:
     void InitializeFiducialActors()
     {
         for (const auto& point : Fiducials) {
+            // Convert physical space to image index space
+            double imageX = (point.x - ImageOrigin[0]) / ImageSpacing[0];
+            double imageY = (point.y - ImageOrigin[1]) / ImageSpacing[1];
+            double imageZ = (point.z - ImageOrigin[2]) / ImageSpacing[2];
+
             auto sphereSource = vtkSmartPointer<vtkSphereSource>::New();
-            sphereSource->SetCenter(point.x, point.y, point.z);
+            sphereSource->SetCenter(imageX, imageY, imageZ);
             sphereSource->SetRadius(1.0);
 
             auto mapper = vtkSmartPointer<vtkPolyDataMapper>::New();
@@ -138,6 +150,7 @@ private:
         for (size_t i = 0; i < Fiducials.size(); ++i) {
             double dz = std::abs(Fiducials[i].z - sliceZ);
             FiducialActors[i]->SetVisibility(dz < tolerance);
+            FiducialActors[i]->SetVisibility(true);
         }
     }
 
@@ -146,6 +159,9 @@ private:
     int MaxSlice = 0;
     double ZSpacing = 1.0;
     double ZOrigin = 0.0;
+
+    double ImageSpacing[3] = {1.0, 1.0, 1.0};
+    double ImageOrigin[3] = {0.0, 0.0, 0.0};
 
     std::vector<FiducialPoint> Fiducials;
     std::vector<vtkSmartPointer<vtkActor>> FiducialActors;
@@ -197,6 +213,7 @@ int main(int argc, char* argv[])
 
     auto renderer = viewer->GetRenderer(); // use viewer's internal renderer
     viewer->GetRenderWindow()->Render();
+    renderer->ResetCamera(); // Fit image to window
 
     // Read fiducials
     auto fiducials = ReadFiducialsFromFCSV(fcsvPath);
@@ -211,6 +228,12 @@ int main(int argc, char* argv[])
     style->SetMaxSlice(size[2] - 1);
     style->SetSpacing(spacing[2]);
     style->SetOrigin(origin[2]);
+    double spacingArray[3] = { spacing[0], spacing[1], spacing[2] };
+    double originArray[3]  = { origin[0], origin[1], origin[2] };
+
+    style->SetImageSpacing(spacingArray);
+    style->SetImageOrigin(originArray);
+
     style->SetFiducialPoints(fiducials, renderer);
     style->InitializeFiducialActors();
 
